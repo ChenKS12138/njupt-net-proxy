@@ -125,7 +125,7 @@ func runSocks5Proxy(proxyStatus chan ProxyStatus, listener net.Listener, socks5U
 	}()
 	proxyStatus <- Launching
 	conf := &socks5.Config{}
-	if socks5UpstreamAddr != nil {
+	if socks5UpstreamAddr != nil && len(*socks5UpstreamAddr) != 0 {
 		auth := proxy.Auth{}
 		dialer, err := proxy.SOCKS5("tcp", *socks5UpstreamAddr, &auth, proxy.Direct)
 		if err != nil {
