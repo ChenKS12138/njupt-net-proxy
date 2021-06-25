@@ -1,12 +1,15 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 
+	"github.com/armon/go-socks5"
 	"github.com/elazarl/goproxy"
 )
 
@@ -19,47 +22,91 @@ const (
 )
 
 func main() {
-	proxyStatusChan := make(chan ProxyStatus)
-	listener, err := net.Listen("tcp6", ":0")
-	if err != nil {
-		panic(err)
+	httpPort := flag.Int("httpPort", -1, "to enable http proxy server")
+	socks5Port := flag.Int("socks5Port", -1, "to enable socks5 proxy server")
+
+	flag.Parse()
+
+	if (*httpPort) < 0 && (*socks5Port) < 0 {
+		fmt.Printf("Usage:\n  njupt-net-proxy -httpPort 1087\n  njupt-net-proxy -socks5Port 1080\n")
+		return
 	}
-	go runProxy(proxyStatusChan, listener)
+
+	httpProxyStatusChan := make(chan ProxyStatus)
+	socks5ProxyStatusChan := make(chan ProxyStatus)
+
+	if (*httpPort) >= 0 {
+		listener, err := net.Listen("tcp6", fmt.Sprintf(":%d", *httpPort))
+		if err != nil {
+			panic(err)
+		}
+		go func() {
+			go runHttpProxy(httpProxyStatusChan, listener)
+			for {
+				switch <-httpProxyStatusChan {
+				case Running:
+					ipv6Addres, err := getLocalIpv6Addresses()
+					if err != nil {
+						log.Fatal(err)
+					}
+					port := listener.Addr().(*net.TCPAddr).Port
+					log.Println("Http Proxy Server Start!")
+					for _, addr := range ipv6Addres {
+						log.Printf("http://[%s]:%d\n", addr, port)
+					}
+				case Launching:
+					log.Println("Http Proxy Server Launching....")
+				case STOPED:
+					listener.Close()
+					log.Println("Http Proxy Server Stoped!")
+				}
+			}
+		}()
+	}
+
+	if (*socks5Port) >= 0 {
+		listener, err := net.Listen("tcp6", fmt.Sprintf(":%d", *socks5Port))
+		if err != nil {
+			panic(err)
+		}
+		go func() {
+			go runSocks5Proxy(socks5ProxyStatusChan, listener)
+			for {
+				switch <-socks5ProxyStatusChan {
+				case Running:
+					ipv6Addres, err := getLocalIpv6Addresses()
+					if err != nil {
+						log.Fatal(err)
+					}
+					port := listener.Addr().(*net.TCPAddr).Port
+					log.Println("Socks5 Proxy Server Start!")
+					for _, addr := range ipv6Addres {
+						log.Printf("socks5h://[%s]:%d\n", addr, port)
+					}
+				case Launching:
+					log.Println("Socks5 Proxy Server Launching...")
+				case STOPED:
+					listener.Close()
+					log.Println("SOcks5 Proxy Server Stoped!")
+				}
+			}
+		}()
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
 
-	for {
-		select {
-		case nextProxyStatus := <-proxyStatusChan:
-			switch nextProxyStatus {
-			case Running:
-				ipv6Addresses, err := getLocalIpv6Addresses()
-				if err != nil {
-					log.Fatal(err)
-				}
-				port := listener.Addr().(*net.TCPAddr).Port
-				log.Println("Proxy Server Start!")
-				for _, addr := range ipv6Addresses {
-					log.Printf("http://[%s]:%d\n", addr, port)
-				}
-			case Launching:
-				log.Println("Proxy Server Launching......")
-			case STOPED:
-				log.Println("Proxy Server Stoped!")
-				listener.Close()
-				return
-			}
-		case sig := <-quit:
-			log.Printf("shutting down ... Reason %s \n", sig)
-			listener.Close()
-			return
-		}
+	sig := <-quit
+	log.Printf("Shutting down ... \nReason %s \n", sig)
+	if (*httpPort) >= 0 {
+		httpProxyStatusChan <- STOPED
 	}
-
+	if (*socks5Port) >= 0 {
+		socks5ProxyStatusChan <- STOPED
+	}
 }
 
-func runProxy(proxyStatus chan ProxyStatus, listener net.Listener) {
+func runHttpProxy(proxyStatus chan ProxyStatus, listener net.Listener) {
 	defer func() {
 		proxyStatus <- STOPED
 	}()
@@ -67,6 +114,22 @@ func runProxy(proxyStatus chan ProxyStatus, listener net.Listener) {
 	proxy := goproxy.NewProxyHttpServer()
 	proxyStatus <- Running
 	http.Serve(listener, proxy)
+}
+
+func runSocks5Proxy(proxyStatus chan ProxyStatus, listener net.Listener) {
+	defer func() {
+		proxyStatus <- STOPED
+	}()
+	proxyStatus <- Launching
+	conf := &socks5.Config{}
+	server, err := socks5.New(conf)
+	if err != nil {
+		panic(err)
+	}
+	proxyStatus <- Running
+	if err := server.Serve(listener); err != nil {
+		panic(err)
+	}
 }
 
 func getLocalIpv6Addresses() ([]string, error) {
