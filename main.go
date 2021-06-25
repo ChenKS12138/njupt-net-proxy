@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/armon/go-socks5"
 	"github.com/elazarl/goproxy"
+	"golang.org/x/net/proxy"
 )
 
 type ProxyStatus int
@@ -24,6 +26,7 @@ const (
 func main() {
 	httpPort := flag.Int("httpPort", -1, "to enable http proxy server")
 	socks5Port := flag.Int("socks5Port", -1, "to enable socks5 proxy server")
+	socks5UpstreamAddr := flag.String("socks5UpstreamAddr", "", "to use socks5 proxy upstream")
 
 	flag.Parse()
 
@@ -70,7 +73,7 @@ func main() {
 			panic(err)
 		}
 		go func() {
-			go runSocks5Proxy(socks5ProxyStatusChan, listener)
+			go runSocks5Proxy(socks5ProxyStatusChan, listener, socks5UpstreamAddr)
 			for {
 				switch <-socks5ProxyStatusChan {
 				case Running:
@@ -116,12 +119,25 @@ func runHttpProxy(proxyStatus chan ProxyStatus, listener net.Listener) {
 	http.Serve(listener, proxy)
 }
 
-func runSocks5Proxy(proxyStatus chan ProxyStatus, listener net.Listener) {
+func runSocks5Proxy(proxyStatus chan ProxyStatus, listener net.Listener, socks5UpstreamAddr *string) {
 	defer func() {
 		proxyStatus <- STOPED
 	}()
 	proxyStatus <- Launching
 	conf := &socks5.Config{}
+	if socks5UpstreamAddr != nil {
+		auth := proxy.Auth{}
+		dialer, err := proxy.SOCKS5("tcp", *socks5UpstreamAddr, &auth, proxy.Direct)
+		if err != nil {
+			panic(err)
+		}
+		tr := &http.Transport{
+			Dial: dialer.Dial,
+		}
+		conf.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return tr.Dial(network, addr)
+		}
+	}
 	server, err := socks5.New(conf)
 	if err != nil {
 		panic(err)
